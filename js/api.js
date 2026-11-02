@@ -79,8 +79,10 @@ const enc = encodeURIComponent;
 export const db = {
   all: (table, order) => rest('GET', `${table}?select=*${order ? `&order=${order}` : ''}`),
   insert: (table, row) => rest('POST', table, row, 'return=minimal'),
-  update: (table, id, patch) => rest('PATCH', `${table}?id=eq.${enc(id)}`, patch, 'return=minimal'),
-  remove: (table, id) => rest('DELETE', `${table}?id=eq.${enc(id)}`),
+  update: (table, id, patch, key = 'id') => rest('PATCH', `${table}?${key}=eq.${enc(id)}`, patch, 'return=minimal'),
+  remove: (table, id, key = 'id') => rest('DELETE', `${table}?${key}=eq.${enc(id)}`),
+  // Insert, or update the existing row with the same key (for tables keyed by day or by person).
+  upsert: (table, row, conflict) => rest('POST', `${table}?on_conflict=${conflict}`, row, 'resolution=merge-duplicates,return=minimal'),
 };
 
 // ---- Outbox: every change is saved on the device first, then sent in order.
@@ -108,8 +110,9 @@ export async function flush() {
       const op = outbox[0];
       try {
         if (op.type === 'insert') await db.insert(op.table, op.row);
-        else if (op.type === 'update') await db.update(op.table, op.id, op.patch);
-        else if (op.type === 'delete') await db.remove(op.table, op.id);
+        else if (op.type === 'update') await db.update(op.table, op.id, op.patch, op.key);
+        else if (op.type === 'delete') await db.remove(op.table, op.id, op.key);
+        else if (op.type === 'upsert') await db.upsert(op.table, op.row, op.conflict);
       } catch (e) {
         if (e instanceof NetworkError || e instanceof AuthError) { notifyOutbox(e); return; }
         // The server refused this change (for example, the item was already deleted). Skip it.

@@ -3,10 +3,15 @@
 import { db, enqueue, flush, pendingChanges, currentUser } from './api.js';
 import { uuid, today, nextRepeat, daysBetween, addDays } from './util.js';
 
-const TABLES = ['areas', 'projects', 'tasks', 'subtasks'];
+const TABLES = ['areas', 'projects', 'tasks', 'subtasks', 'progress_log'];
+const WC = { chapters: 'wc_chapters', entries: 'wc_entries', settings: 'wc_settings' };
 const SNAPSHOT_KEY = 'planner.snapshot';
 
-export const state = { areas: [], projects: [], tasks: [], subtasks: [], loaded: false, offline: false };
+export const state = {
+  areas: [], projects: [], tasks: [], subtasks: [], progress_log: [],
+  wc: { chapters: [], entries: [], settings: null },
+  loaded: false, offline: false, needsUpdate: false,
+};
 
 const listeners = new Set();
 export const onChange = (fn) => listeners.add(fn);
@@ -23,6 +28,7 @@ function saveSnapshot() {
   try {
     const snap = { user: currentUser()?.id };
     TABLES.forEach((t) => { snap[t] = state[t]; });
+    snap.wc = state.wc;
     localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(snap));
   } catch { /* storage full or unavailable */ }
 }
@@ -32,6 +38,7 @@ export function loadSnapshot() {
     const snap = JSON.parse(localStorage.getItem(SNAPSHOT_KEY));
     if (!snap || snap.user !== currentUser()?.id) return false;
     TABLES.forEach((t) => { state[t] = snap[t] || []; });
+    if (snap.wc) state.wc = snap.wc;
     state.loaded = true;
     emit();
     return true;
@@ -45,9 +52,16 @@ export function clearSnapshot() { try { localStorage.removeItem(SNAPSHOT_KEY); }
 export async function refresh() {
   await flush();
   if (pendingChanges()) return false;
-  const results = await Promise.all(TABLES.map((t) => db.all(t)));
+  // A table that doesn't exist yet means the database update hasn't been run.
+  let missing = false;
+  const get = (t) => db.all(t).catch((e) => { if (/does not exist|schema cache|Could not find/i.test(e.message)) { missing = true; return []; } throw e; });
+  const [results, chapters, entries, settings] = await Promise.all([
+    Promise.all(TABLES.map(get)), get(WC.chapters), get(WC.entries), get(WC.settings),
+  ]);
   if (pendingChanges()) return false;
   TABLES.forEach((t, i) => { state[t] = results[i]; });
+  state.wc = { chapters, entries, settings: settings[0] || null };
+  state.needsUpdate = missing || (settings[0] && !('off_days' in settings[0])) || (results[1][0] && !('emoji' in results[1][0]));
   state.loaded = true;
   state.offline = false;
   emit();
@@ -59,19 +73,22 @@ const DEFAULTS = {
   projects: () => ({
     area_id: null, parent_id: null, name: '', description: '', notes: '', status: 'active',
     start_date: null, deadline: null, progress_type: 'tasks', progress_value: 0, progress_target: null,
-    progress_unit: '', collapsed: false, completed_at: null,
+    progress_unit: '', collapsed: false, completed_at: null, emoji: '', color: '',
   }),
   tasks: () => ({
     project_id: null, title: '', notes: '', planned_date: null, deadline: null, estimate_minutes: null,
     priority: false, repeat_rule: null, start_time: null, block_minutes: null, done: false, done_at: null,
   }),
   subtasks: () => ({ title: '', done: false }),
+  progress_log: () => ({}),
 };
 
 export function create(table, fields) {
   const row = { id: uuid(), sort_order: Date.now(), created_at: new Date().toISOString(), ...DEFAULTS[table](), ...fields };
   state[table].push(row);
-  enqueue({ type: 'insert', table, row });
+  const send = { ...row };
+  if (table === 'projects' && state.needsUpdate) { delete send.emoji; delete send.color; }
+  enqueue({ type: 'insert', table, row: send });
   emit();
   return row;
 }
@@ -137,7 +154,7 @@ export function projectPath(pid) {
 export function progress(p) {
   const type = p.progress_type;
   if (type === 'subgoals') {
-    const subs = children(p.id);
+    const subs = descendants(p.id).map((id) => getProject(id));
     const done = subs.filter((s) => s.status === 'done').length;
     return { ratio: subs.length ? done / subs.length : 0, label: subs.length ? `${done} of ${subs.length} subgoals` : 'No subgoals yet' };
   }
@@ -145,6 +162,10 @@ export function progress(p) {
     const target = Number(p.progress_target) || 0, value = Number(p.progress_value) || 0;
     const unit = p.progress_unit ? ` ${p.progress_unit}` : '';
     return { ratio: target ? Math.min(1, value / target) : 0, label: target ? `${value.toLocaleString('en-US')} of ${target.toLocaleString('en-US')}${unit}` : `${value.toLocaleString('en-US')}${unit}` };
+  }
+  if (type === 'words') {
+    const value = wcTotal(), target = state.wc.settings?.goal || 0;
+    return { ratio: target ? Math.min(1, value / target) : 0, label: `${value.toLocaleString('en-US')} of ${target.toLocaleString('en-US')} words` };
   }
   if (type === 'percent') {
     const v = Math.max(0, Math.min(100, Number(p.progress_value) || 0));
@@ -178,6 +199,50 @@ export function toggleDone(id) {
   }
 }
 
+// A new value for a project measured by a number or percentage, kept in its history for the graph.
+export function setProgressValue(id, value) {
+  update('projects', id, { progress_value: value });
+  const day = today();
+  const existing = state.progress_log.find((l) => l.project_id === id && l.day === day);
+  if (existing) update('progress_log', existing.id, { value });
+  else create('progress_log', { project_id: id, day, value });
+}
+
+// ---- Word counter
+
+// A chapter marked for trimming counts as its trim target until the real count drops to that target.
+export const wcCounted = (c) => (c.trim_to != null && c.words > c.trim_to ? c.trim_to : c.words);
+export const wcChapters = () => [...state.wc.chapters].sort((a, b) => a.ord - b.ord);
+export const wcTotal = () => state.wc.chapters.reduce((a, c) => a + wcCounted(c), 0);
+
+export function wcSaveChapter(row) {
+  const i = state.wc.chapters.findIndex((c) => c.id === row.id);
+  if (i >= 0) state.wc.chapters[i] = row; else state.wc.chapters.push(row);
+  enqueue({ type: 'upsert', table: WC.chapters, row, conflict: 'user_id,id' });
+  emit();
+}
+
+export function wcSaveEntry(row) {
+  const i = state.wc.entries.findIndex((e) => e.day === row.day);
+  if (i >= 0) state.wc.entries[i] = row; else state.wc.entries.push(row);
+  enqueue({ type: 'upsert', table: WC.entries, row, conflict: 'user_id,day' });
+  emit();
+}
+
+export function wcDeleteEntry(day) {
+  state.wc.entries = state.wc.entries.filter((e) => e.day !== day);
+  enqueue({ type: 'delete', table: WC.entries, id: day, key: 'day' });
+  emit();
+}
+
+export function wcSaveSettings(patch) {
+  const row = { ...(state.wc.settings || { baseline: 0, goal: 90000 }), ...patch };
+  delete row.user_id;
+  state.wc.settings = row;
+  enqueue({ type: 'upsert', table: WC.settings, row, conflict: 'user_id' });
+  emit();
+}
+
 export function setProjectStatus(id, status) {
   update('projects', id, { status, completed_at: status === 'done' ? new Date().toISOString() : null });
 }
@@ -187,7 +252,7 @@ export function setProjectStatus(id, status) {
 const FIELDS = {
   areas: ['id', 'name', 'sort_order', 'created_at'],
   projects: ['id', 'area_id', 'parent_id', 'name', 'description', 'notes', 'status', 'start_date', 'deadline', 'progress_type',
-    'progress_value', 'progress_target', 'progress_unit', 'collapsed', 'sort_order', 'created_at', 'completed_at'],
+    'progress_value', 'progress_target', 'progress_unit', 'collapsed', 'sort_order', 'created_at', 'completed_at', 'emoji', 'color'],
   tasks: ['id', 'project_id', 'title', 'notes', 'planned_date', 'deadline', 'estimate_minutes', 'priority', 'repeat_rule',
     'start_time', 'block_minutes', 'done', 'done_at', 'sort_order', 'created_at'],
   subtasks: ['id', 'task_id', 'title', 'done', 'sort_order', 'created_at'],
@@ -196,7 +261,7 @@ const FIELDS = {
 // Works out what an import file would add. Items already here (same id) are skipped,
 // and areas with a name you already use are merged into yours.
 export function planImport(data) {
-  if (!data || data.app !== 'Planner' || !Array.isArray(data.tasks)) throw new Error('This file is not a Planner backup or import file.');
+  if (!data || data.app !== 'Planner') throw new Error('This file is not a Planner backup or import file.');
   const has = (table, id) => state[table].some((r) => r.id === id);
   const areaMap = {};
   const newAreas = [];
@@ -216,12 +281,17 @@ export function planImport(data) {
       if (!p.parent_id || !ids.has(p.parent_id) || placed.has(p.parent_id)) { ordered.push(p); placed.add(p.id); }
     });
   }
-  const tasks = data.tasks.filter((t) => !has('tasks', t.id));
+  const tasks = (data.tasks || []).filter((t) => !has('tasks', t.id));
+  const wcChaptersNew = (data.wc_chapters || []).filter((c) => !state.wc.chapters.some((x) => x.id === c.id));
+  const wcEntriesNew = (data.wc_entries || []).filter((e) => !state.wc.entries.some((x) => x.day === e.day));
+  const wcSettingsNew = !state.wc.settings && data.wc_settings ? data.wc_settings : null;
+  const looks = (data.project_looks || []).filter((l) => { const p = state.projects.find((x) => x.id === l.id); return p && !p.emoji; });
   const subtasks = (data.subtasks || []).filter((s) => !has('subtasks', s.id));
   return {
     areaMap, areas: newAreas, projects: ordered, tasks, subtasks,
-    skipped: (data.projects || []).length - ordered.length + data.tasks.length - tasks.length,
+    skipped: (data.projects || []).length - ordered.length + (data.tasks || []).length - tasks.length,
     openTasks: tasks.filter((t) => !t.done).length,
+    wcChapters: wcChaptersNew, wcEntries: wcEntriesNew, wcSettings: wcSettingsNew, looks,
   };
 }
 
@@ -236,10 +306,17 @@ export function runImport(plan) {
   });
   plan.tasks.forEach((t) => create('tasks', pick('tasks', t)));
   plan.subtasks.forEach((s) => create('subtasks', pick('subtasks', s)));
+  plan.looks.forEach((l) => update('projects', l.id, { emoji: l.emoji || '', color: l.color || '' }));
+  plan.wcChapters.forEach((c) => wcSaveChapter({ id: c.id, name: c.name, ord: c.ord, words: c.words, trim_to: c.trim_to ?? null, trimmed: !!c.trimmed }));
+  plan.wcEntries.forEach((e) => wcSaveEntry({ day: e.day, words: e.words, chapters: e.chapters || {}, note: e.note || '' }));
+  if (plan.wcSettings) wcSaveSettings(plan.wcSettings);
 }
 
 export function exportAll() {
   const out = { exported_at: new Date().toISOString(), app: 'Planner', version: 1 };
   TABLES.forEach((t) => { out[t] = state[t]; });
+  out.wc_chapters = state.wc.chapters;
+  out.wc_entries = state.wc.entries;
+  out.wc_settings = state.wc.settings;
   return out;
 }

@@ -57,3 +57,12 @@ export function nextRepeat(from, rule) {
 
 export const REPEAT_LABELS = { daily: 'Every day', weekdays: 'Every weekday', weekly: 'Every week', monthly: 'Every month' };
 export const ESTIMATES = [15, 30, 45, 60, 90, 120, 180, 240];
+
+// "31 Mar" this year, "31 Mar 2027" otherwise.
+export function shortDate(s) {
+  if (!s) return '';
+  const d = parseISO(s);
+  const opts = { day: 'numeric', month: 'short' };
+  if (d.getFullYear() !== new Date().getFullYear()) opts.year = 'numeric';
+  return d.toLocaleDateString('en-GB', opts);
+}

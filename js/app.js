@@ -2,9 +2,11 @@
 import { currentUser, signIn, signOut, AuthError, NetworkError, onOutboxChange, pendingChanges, clearOutbox } from './api.js';
 import {
   state, onChange, refresh, loadSnapshot, clearSnapshot, create, update, remove, toggleDone, setProjectStatus,
-  getTask, getProject, areas, exportAll, byOrder, planImport, runImport,
+  getTask, getProject, areas, exportAll, byOrder, planImport, runImport, setProgressValue,
 } from './store.js';
 import * as V from './views.js';
+import { projectsView, projectView } from './project.js';
+import { writingView, updateWritingInputs, setDraft, saveCounts, deleteDay, addChapter, saveWritingSettings, earnedBadges } from './writing.js';
 import { today, addDays } from './util.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -14,8 +16,8 @@ const root = $('#app');
 // ---- Routing (#/today, #/inbox, #/projects, #/project/<id>, #/settings)
 
 function route() {
-  const [, name = 'today', id] = (location.hash || '#/today').split('/');
-  return { name, id };
+  const [, name = 'today', id, tab] = (location.hash || '#/today').split('/');
+  return { name, id, tab };
 }
 addEventListener('hashchange', () => { render(); $('#main')?.scrollTo?.(0, 0); });
 
@@ -25,8 +27,9 @@ function mainHTML(r) {
   if (!state.loaded) return '<p class="empty">Loading…</p>';
   switch (r.name) {
     case 'inbox': return V.inboxView();
-    case 'projects': return V.projectsView();
-    case 'project': return V.projectView(r.id, ui);
+    case 'projects': return projectsView();
+    case 'project': return projectView(r.id, r.tab, ui);
+    case 'writing': return writingView(ui);
     case 'settings': return V.settingsView(currentUser()?.email, pendingChanges(), ui.importPlan, ui.importError);
     default: return V.todayView(ui);
   }
@@ -57,7 +60,8 @@ function render() {
   $('#tabbar').innerHTML = V.tabbar(r);
   $('#main').innerHTML = `<div class="page">${mainHTML(r)}</div>`;
   if (keepId) document.getElementById(keepId)?.focus();
-  const titles = { today: 'Today', inbox: 'Inbox', projects: 'Projects', settings: 'Settings' };
+  if (r.name === 'writing') { updateWritingInputs(); checkBadges(); }
+  const titles = { today: 'Today', inbox: 'Inbox', projects: 'Projects', settings: 'Settings', writing: 'Word counter' };
   document.title = r.name === 'project' ? (getProject(r.id)?.name || 'Project') : titles[r.name] || 'Today';
   if (ui.panel && !panelTargetExists()) closePanel();
   renderStatus();
@@ -106,6 +110,17 @@ function renderStatus() {
     el.textContent = state.offline ? `Offline${n ? ` · ${n} change${n === 1 ? '' : 's'} waiting` : ''}` : 'Saving…';
     el.hidden = false;
   } else el.hidden = true;
+}
+
+// A small celebration when a word counter milestone is reached.
+let knownBadges = null;
+function checkBadges() {
+  const now = earnedBadges();
+  if (knownBadges && state.loaded) {
+    const fresh = now.filter((b) => !knownBadges.includes(b));
+    if (fresh.length) toast(`🎉 Milestone reached: ${fresh.join(', ')}`);
+  }
+  if (state.loaded) knownBadges = now;
 }
 
 let toastTimer;
@@ -168,6 +183,12 @@ const actions = {
     openPanel('project', p.id, 'proj-name');
   },
   'edit-project': (id) => openPanel('project', id, null),
+  'pick-emoji': (id, btn) => { update('projects', id, { emoji: btn.dataset.emoji }); renderPanel(); },
+  'pick-color': (id, btn) => { update('projects', id, { color: btn.dataset.color }); renderPanel(); },
+  'wc-delete': (day) => {
+    if (ui.wcConfirm !== day) { ui.wcConfirm = day; render(); return; }
+    ui.wcConfirm = null; deleteDay(day); toast('Day removed from the log');
+  },
   'toggle-show-done': (id) => { ui.showDone[id] = !ui.showDone[id]; render(); },
   plan: (id, btn) => {
     const when = btn.dataset.when;
@@ -282,8 +303,27 @@ const forms = {
   progress: (form) => {
     const v = Number(form.querySelector('input').value);
     if (!Number.isFinite(v)) return;
-    update('projects', form.dataset.id, { progress_value: v });
+    setProgressValue(form.dataset.id, v);
     toast('Progress updated');
+  },
+  'wc-save': () => {
+    ui.wcDate = $('#wc-date').value || today();
+    const msg = saveCounts(ui.wcDate, $('#wc-note').value.trim());
+    if (msg) { ui.wcMsg = msg; render(); }
+  },
+  'wc-settings': () => {
+    const base = Math.max(0, Math.round(Number($('#wc-base').value) || 0));
+    const goal = Math.max(1000, Math.round(Number($('#wc-goal').value) || 90000));
+    const off = [...document.querySelectorAll('.wc-off:checked')].map((x) => Number(x.value));
+    saveWritingSettings(base, goal, off);
+    toast('Counter settings saved. Monthly targets rescaled.');
+  },
+  'wc-add-chapter': (form) => {
+    const input = form.querySelector('input');
+    const name = input.value.trim();
+    if (!name) return;
+    addChapter(name);
+    input.value = '';
   },
   'quick-add': () => {
     const title = $('#qa-title').value.trim();
@@ -331,7 +371,7 @@ document.addEventListener('change', async (e) => {
     }
     if (kind === 'projects' && field === 'status') setProjectStatus(id, value);
     else update(kind, id, { [field]: value });
-    if (field === 'progress_type') renderPanel();
+    if (['progress_type', 'emoji'].includes(field)) renderPanel();
     return;
   }
   if (el.dataset.subDone) { update('subtasks', el.dataset.subDone, { done: el.checked }); renderPanel(); return; }
@@ -347,7 +387,10 @@ document.addEventListener('change', async (e) => {
   }
 });
 
-document.addEventListener('input', (e) => { if (e.target.classList?.contains('title-input')) autosize(e.target); });
+document.addEventListener('input', (e) => {
+  if (e.target.classList?.contains('title-input')) autosize(e.target);
+  if (e.target.dataset?.wcChapter) setDraft(e.target.dataset.wcChapter, e.target.value);
+});
 
 // Remember which subgoals are folded, and other open/closed sections.
 document.addEventListener('toggle', (e) => {
