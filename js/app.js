@@ -2,7 +2,7 @@
 import { currentUser, signIn, signOut, AuthError, NetworkError, onOutboxChange, pendingChanges, clearOutbox } from './api.js';
 import {
   state, onChange, refresh, loadSnapshot, clearSnapshot, create, update, remove, toggleDone, setProjectStatus,
-  getTask, getProject, areas, exportAll, byOrder,
+  getTask, getProject, areas, exportAll, byOrder, planImport, runImport,
 } from './store.js';
 import * as V from './views.js';
 import { today, addDays } from './util.js';
@@ -27,7 +27,7 @@ function mainHTML(r) {
     case 'inbox': return V.inboxView();
     case 'projects': return V.projectsView();
     case 'project': return V.projectView(r.id, ui);
-    case 'settings': return V.settingsView(currentUser()?.email, pendingChanges());
+    case 'settings': return V.settingsView(currentUser()?.email, pendingChanges(), ui.importPlan, ui.importError);
     default: return V.todayView(ui);
   }
 }
@@ -197,6 +197,13 @@ const actions = {
     a.click();
     setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
   },
+  'import-run': () => {
+    const plan = ui.importPlan;
+    ui.importPlan = null;
+    runImport(plan);
+    toast(`Imported ${plan.projects.length} projects and ${plan.tasks.length} tasks. Saving in the background…`);
+  },
+  'import-cancel': () => { ui.importPlan = null; render(); },
   'sign-out': () => {
     if (pendingChanges() && !ui.confirmSignOut) { ui.confirmSignOut = true; toast('Some changes are not saved yet. Press Sign out again to sign out anyway.'); return; }
     ui.confirmSignOut = false;
@@ -300,8 +307,19 @@ document.addEventListener('submit', (e) => {
 
 const numberOrNull = (v) => (v === '' || v == null ? null : Number(v));
 
-document.addEventListener('change', (e) => {
+document.addEventListener('change', async (e) => {
   const el = e.target;
+  if (el.id === 'import-file' && el.files?.[0]) {
+    try {
+      ui.importPlan = planImport(JSON.parse(await el.files[0].text()));
+      ui.importError = '';
+    } catch (err) {
+      ui.importPlan = null;
+      ui.importError = err instanceof SyntaxError ? 'This file could not be read. Choose a .json file made by Planner.' : err.message;
+    }
+    render();
+    return;
+  }
   if (el.dataset.field) {
     const { field, kind, id } = el.dataset;
     let value = el.type === 'checkbox' ? el.checked : el.value;

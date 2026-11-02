@@ -182,6 +182,62 @@ export function setProjectStatus(id, status) {
   update('projects', id, { status, completed_at: status === 'done' ? new Date().toISOString() : null });
 }
 
+// ---- Import (a backup, or data brought over from another app)
+
+const FIELDS = {
+  areas: ['id', 'name', 'sort_order', 'created_at'],
+  projects: ['id', 'area_id', 'parent_id', 'name', 'description', 'notes', 'status', 'start_date', 'deadline', 'progress_type',
+    'progress_value', 'progress_target', 'progress_unit', 'collapsed', 'sort_order', 'created_at', 'completed_at'],
+  tasks: ['id', 'project_id', 'title', 'notes', 'planned_date', 'deadline', 'estimate_minutes', 'priority', 'repeat_rule',
+    'start_time', 'block_minutes', 'done', 'done_at', 'sort_order', 'created_at'],
+  subtasks: ['id', 'task_id', 'title', 'done', 'sort_order', 'created_at'],
+};
+
+// Works out what an import file would add. Items already here (same id) are skipped,
+// and areas with a name you already use are merged into yours.
+export function planImport(data) {
+  if (!data || data.app !== 'Planner' || !Array.isArray(data.tasks)) throw new Error('This file is not a Planner backup or import file.');
+  const has = (table, id) => state[table].some((r) => r.id === id);
+  const areaMap = {};
+  const newAreas = [];
+  (data.areas || []).forEach((a) => {
+    const same = state.areas.find((x) => x.id === a.id || x.name.trim().toLowerCase() === String(a.name).trim().toLowerCase());
+    if (same) areaMap[a.id] = same.id; else newAreas.push(a);
+  });
+  // Parents before their subgoals.
+  const pending = (data.projects || []).filter((p) => !has('projects', p.id));
+  const ids = new Set(pending.map((p) => p.id));
+  const ordered = [];
+  const placed = new Set();
+  let guard = 0;
+  while (ordered.length < pending.length && guard++ < 50) {
+    pending.forEach((p) => {
+      if (placed.has(p.id)) return;
+      if (!p.parent_id || !ids.has(p.parent_id) || placed.has(p.parent_id)) { ordered.push(p); placed.add(p.id); }
+    });
+  }
+  const tasks = data.tasks.filter((t) => !has('tasks', t.id));
+  const subtasks = (data.subtasks || []).filter((s) => !has('subtasks', s.id));
+  return {
+    areaMap, areas: newAreas, projects: ordered, tasks, subtasks,
+    skipped: (data.projects || []).length - ordered.length + data.tasks.length - tasks.length,
+    openTasks: tasks.filter((t) => !t.done).length,
+  };
+}
+
+export function runImport(plan) {
+  const pick = (table, row) => Object.fromEntries(FIELDS[table].filter((k) => k in row).map((k) => [k, row[k]]));
+  // New areas go after the ones you already have, in the file's order.
+  plan.areas.forEach((a, i) => create('areas', { ...pick('areas', a), sort_order: Date.now() + i }));
+  plan.projects.forEach((p) => {
+    const row = pick('projects', p);
+    if (row.area_id && plan.areaMap[row.area_id]) row.area_id = plan.areaMap[row.area_id];
+    create('projects', row);
+  });
+  plan.tasks.forEach((t) => create('tasks', pick('tasks', t)));
+  plan.subtasks.forEach((s) => create('subtasks', pick('subtasks', s)));
+}
+
 export function exportAll() {
   const out = { exported_at: new Date().toISOString(), app: 'Planner', version: 1 };
   TABLES.forEach((t) => { out[t] = state[t]; });

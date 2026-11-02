@@ -241,7 +241,6 @@ function subgoalBlock(sg, ui) {
       ${addTaskForm(`sg-${sg.id}`, { project: sg.id })}
       ${doneToggle(sg.id, ui, done.length)}
       ${kids.map((k) => subgoalBlock(k, ui)).join('')}
-      <button type="button" class="link small" data-act="new-subgoal" data-id="${sg.id}">Add a subgoal inside</button>
     </div>
   </details>`;
 }
@@ -280,7 +279,7 @@ export function projectView(id, ui) {
 
 // ---- Settings
 
-export function settingsView(email, pending) {
+export function settingsView(email, pending, importPlan, importError) {
   const list = areas();
   return `<header class="page-head"><h1>Settings</h1></header>
     <section class="block">
@@ -304,6 +303,19 @@ export function settingsView(email, pending) {
       <p class="muted small">Download everything as a JSON file, as a backup or to take elsewhere.</p>
       <button type="button" class="btn" data-act="export">Download my data</button>
       ${pending ? `<p class="muted small">${pending} change${pending === 1 ? '' : 's'} waiting to be saved. They're sent as soon as there's a connection.</p>` : '<p class="muted small">All changes are saved.</p>'}
+    </section>
+    <section class="block">
+      <div class="block-head"><h2>Import</h2></div>
+      <p class="muted small">Add the contents of a Planner backup or import file. Items you already have are skipped, so importing the same file twice is safe.</p>
+      ${importPlan && !importPlan.projects.length && !importPlan.tasks.length && !importPlan.areas.length ? `<div class="import-summary">
+          <p>Everything in this file is already here, so there's nothing new to import.</p>
+          <div class="chip-row"><button type="button" class="btn" data-act="import-cancel">OK</button></div>
+        </div>` : importPlan ? `<div class="import-summary">
+          <p>This file adds <strong>${importPlan.areas.length} area${importPlan.areas.length === 1 ? '' : 's'}</strong>, <strong>${importPlan.projects.length} projects and subgoals</strong> and <strong>${importPlan.tasks.length} tasks</strong> (${importPlan.openTasks} open, ${importPlan.tasks.length - importPlan.openTasks} finished).${importPlan.skipped ? ` ${importPlan.skipped} items you already have are skipped.` : ''}</p>
+          <div class="chip-row"><button type="button" class="btn primary" data-act="import-run">Import</button><button type="button" class="btn ghost" data-act="import-cancel">Cancel</button></div>
+        </div>`
+    : `<label class="file-pick"><span class="btn">Choose a file…</span><input type="file" accept=".json,application/json" id="import-file" class="sr-only"></label>`}
+      ${importError ? `<p class="form-error">${esc(importError)}</p>` : ''}
     </section>
     <section class="block">
       <div class="block-head"><h2>Account</h2></div>
@@ -406,7 +418,8 @@ export function projectPanel(id, confirmDelete) {
     ? `<p class="small">Delete “${esc(p.name)}” with all its subgoals and tasks?</p>
          <button type="button" class="btn danger" data-act="project-delete-confirm" data-id="${p.id}">Delete for good</button>
          <button type="button" class="btn ghost" data-act="project-delete-cancel">Keep it</button>`
-    : `<button type="button" class="btn ghost danger" data-act="project-delete" data-id="${p.id}">Delete ${isSub ? 'subgoal' : 'project'}</button>`}
+    : `${isSub ? `<button type="button" class="btn ghost" data-act="new-subgoal" data-id="${p.id}">Add a subgoal inside</button>` : ''}
+         <button type="button" class="btn ghost danger" data-act="project-delete" data-id="${p.id}">Delete ${isSub ? 'subgoal' : 'project'}</button>`}
     </div>`;
 }
 

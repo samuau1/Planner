@@ -190,6 +190,12 @@ label.toggle input { width: 18px; height: 18px; accent-color: var(--accent); }
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .form-error { color: var(--danger); min-height: 1.5em; margin: 0; font-size: 14px; }
 
+/* ---- Import */
+.file-pick { display: inline-block; justify-self: start; cursor: pointer; }
+.file-pick:focus-within .btn { outline: 2px solid var(--accent); outline-offset: 2px; }
+.import-summary { display: grid; gap: 10px; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.import-summary p { margin: 0; }
+
 .area-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .area-list li { display: flex; gap: 4px; align-items: center; }
 .area-list input { flex: 1; }
