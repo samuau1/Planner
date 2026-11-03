@@ -586,3 +586,20 @@ details.pick-group > summary { list-style: none; cursor: pointer; display: flex;
 .wd-h { font-size: 10.5px; color: var(--accent); font-variant-numeric: tabular-nums; }
 
 .block > .btn { justify-self: start; }
+
+/* Compact timeline: 36 px per hour, so a whole working day fits on screen. */
+.tl-hour span { top: 1px; font-size: 10.5px; }
+.tl-lane { left: 50px; right: 6px; }
+.tl-now { left: 44px; }
+.tl-block { padding: 3px 7px; gap: 6px; border-radius: 7px; }
+.tl-block .small-check { width: 15px; height: 15px; margin-top: 0; }
+.tl-block .small-check svg { width: 9px; height: 9px; }
+.tl-title { font-size: 12.5px; line-height: 1.25; }
+.tl-time { font-size: 10.5px; line-height: 1.2; }
+.tl-block.short { padding-top: 0; padding-bottom: 0; }
+.tl-block.short .tl-title { font-size: 12px; }
+.tl-work span { font-size: 10.5px; bottom: 2px; }
+@media (min-width: 1100px) { .day-grid:has(.tray) { grid-template-columns: 220px minmax(0, 1fr); } }
+.tl-resize::after { opacity: 0; transition: opacity .15s; }
+.tl-block:hover .tl-resize::after, .tl-block.dragging .tl-resize::after { opacity: .45; }
+@media (hover: none) { .tl-resize::after { opacity: .3; } }

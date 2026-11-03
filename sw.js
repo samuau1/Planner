@@ -1,6 +1,6 @@
 // Lets the app open without a connection. Always tries the network first,
 // so a new version is picked up as soon as you're online.
-const CACHE = 'planner-v4';
+const CACHE = 'planner-v5';
 const SHELL = [
   './', './index.html', './styles.css', './config.js', './manifest.webmanifest',
   './js/app.js', './js/api.js', './js/store.js', './js/views.js', './js/util.js', './js/project.js', './js/writing.js', './js/charts.js', './js/look.js', './js/plan.js',

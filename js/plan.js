@@ -1,10 +1,11 @@
 // The day as a timeline of 30-minute blocks, the daily planning screen, and drag and drop.
 import { state, update, getTask, getProject, rootOf, workHours, byOrder, topProjects, descendants, tasksIn } from './store.js';
 import { esc, today, addDays, longDate, fmtMinutes, niceDate } from './util.js';
-import { colorOf, emojiOf, badge } from './look.js';
+import { colorOf, emojiOf, badge, PALETTE } from './look.js';
 import { taskRow, addTaskForm } from './views.js';
 
-export const DAY_START = 6, DAY_END = 23, SLOT = 30, PX = 56; // timeline from 06:00 to 23:00, 56 px per hour
+export const DAY_START = 6, DAY_END = 23, SLOT = 30, PX = 36; // times you can pick: 06:00–23:00; 36 px per hour on the timeline
+const VIEW_START = 7, VIEW_END = 22; // the timeline shows 07:00–22:00, and grows if a task falls outside
 const toMin = (t) => { const [h, m] = String(t).slice(0, 5).split(':').map(Number); return h * 60 + m; };
 export const toTime = (min) => `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
 const lengthOf = (t) => t.block_minutes || Math.max(SLOT, Math.ceil((t.estimate_minutes || 60) / SLOT) * SLOT);
@@ -16,6 +17,23 @@ export const LENGTH_OPTIONS = [30, 60, 90, 120, 150, 180, 210, 240, 300, 360, 42
 const dayTasks = (day) => state.tasks.filter((t) => t.planned_date === day);
 export const scheduled = (day) => dayTasks(day).filter((t) => t.start_time).sort((a, b) => toMin(a.start_time) - toMin(b.start_time));
 export const unscheduled = (day) => dayTasks(day).filter((t) => !t.start_time && !t.done).sort((a, b) => (b.priority - a.priority) || byOrder(a, b));
+
+// Each task on a day gets its own pastel colour, taking turns through the palette.
+function dayColors(day) {
+  const order = [...scheduled(day), ...unscheduled(day)];
+  const map = {};
+  order.forEach((t, i) => { map[t.id] = PALETTE[(i + 1) % PALETTE.length]; });
+  return map;
+}
+
+// Hours the timeline shows for a day.
+function viewRange(day) {
+  let a = VIEW_START * 60, b = VIEW_END * 60;
+  const w = workHours(day);
+  if (w) { a = Math.min(a, toMin(w.start)); b = Math.max(b, toMin(w.end)); }
+  scheduled(day).forEach((t) => { a = Math.min(a, toMin(t.start_time)); b = Math.max(b, toMin(t.start_time) + lengthOf(t)); });
+  return [Math.floor(a / 60), Math.min(DAY_END, Math.ceil(b / 60))];
+}
 
 // How full the day is: work time against your hours, and time planned outside them.
 export function load(day) {
@@ -60,33 +78,36 @@ function layout(tasks) {
 
 export function timeline(day) {
   const w = workHours(day);
-  const H = (DAY_END - DAY_START) * PX;
-  const y = (min) => ((min - DAY_START * 60) / 60) * PX;
+  const [v0, v1] = viewRange(day);
+  const colors = dayColors(day);
+  const H = (v1 - v0) * PX;
+  const y = (min) => ((min - v0 * 60) / 60) * PX;
   let hours = '';
-  for (let h = DAY_START; h < DAY_END; h++) hours += `<div class="tl-hour" style="top:${(h - DAY_START) * PX}px"><span>${String(h).padStart(2, '0')}:00</span></div>`;
+  for (let h = v0; h < v1; h++) hours += `<div class="tl-hour" style="top:${(h - v0) * PX}px"><span>${String(h).padStart(2, '0')}:00</span></div>`;
   const band = w ? `<div class="tl-work" style="top:${y(toMin(w.start))}px;height:${y(toMin(w.end)) - y(toMin(w.start))}px"><span>Work ${w.start}–${w.end}</span></div>` : '';
-  const now = day === today() && nowMin() > DAY_START * 60 && nowMin() < DAY_END * 60 ? `<div class="tl-now" style="top:${y(nowMin())}px"></div>` : '';
+  const now = day === today() && nowMin() > v0 * 60 && nowMin() < v1 * 60 ? `<div class="tl-now" style="top:${y(nowMin())}px"></div>` : '';
   const blocks = layout(scheduled(day)).map(({ t, s, e, col, cols }) => {
     const p = t.project_id ? rootOf(getProject(t.project_id)) : null;
     const short = e - s <= 30;
-    return `<div class="tl-block tint-${p ? colorOf(p) : 'sand'}${t.done ? ' done' : ''}${short ? ' short' : ''}" data-block="${t.id}"
+    return `<div class="tl-block tint-${colors[t.id]}${t.done ? ' done' : ''}${short ? ' short' : ''}" data-block="${t.id}"
         style="top:${y(s)}px;height:${y(e) - y(s) - 2}px;left:calc(${(col / cols) * 100}% + 2px);width:calc(${100 / cols}% - 4px)">
       <button type="button" class="check small-check" data-act="toggle-done" data-id="${t.id}" aria-label="${t.done ? 'Mark not done' : 'Mark done'}: ${esc(t.title)}"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5.5 10.5l3 3 6-7"/></svg></button>
       <span class="tl-text"><span class="tl-title">${p && emojiOf(p) ? `${esc(emojiOf(p))} ` : ''}${esc(t.title)}</span><span class="tl-time">${toTime(s)}–${toTime(e)}</span></span>
       <span class="tl-resize" data-resize="${t.id}" aria-hidden="true"></span>
     </div>`;
   }).join('');
-  return `<div class="tl" data-day="${day}" style="height:${H}px">${hours}${band}${now}<div class="tl-lane">${blocks}</div></div>`;
+  return `<div class="tl" data-day="${day}" data-start="${v0}" data-end="${v1}" style="height:${H}px">${hours}${band}${now}<div class="tl-lane">${blocks}</div></div>`;
 }
 
 export function tray(day) {
   const list = unscheduled(day);
   if (!list.length) return '';
+  const colors = dayColors(day);
   return `<div class="tray">
     <div class="tray-head"><h2>No time yet</h2><span class="muted small">Drag onto the timeline, or open a task to pick a time</span></div>
     <ul class="tray-list">${list.map((t) => {
     const p = t.project_id ? rootOf(getProject(t.project_id)) : null;
-    return `<li class="tray-item tint-${p ? colorOf(p) : 'sand'}">
+    return `<li class="tray-item tint-${colors[t.id]}">
         <span class="grip" data-tray="${t.id}" aria-label="Drag to the timeline" title="Drag to the timeline">⋮⋮</span>
         <button type="button" class="tray-title" data-act="open-task" data-id="${t.id}">${p && emojiOf(p) ? `${esc(emojiOf(p))} ` : ''}${esc(t.title)}</button>
         <span class="muted small">${fmtMinutes(lengthOf(t))}</span>
@@ -191,8 +212,9 @@ export const dragging = () => !!drag;
 
 function slotAt(tl, clientY, grabOffset = 0) {
   const r = tl.getBoundingClientRect();
-  const min = DAY_START * 60 + ((clientY - r.top - grabOffset) / PX) * 60;
-  return Math.max(DAY_START * 60, Math.min(DAY_END * 60 - SLOT, Math.round(min / SLOT) * SLOT));
+  const v0 = Number(tl.dataset.start) || DAY_START, v1 = Number(tl.dataset.end) || DAY_END;
+  const min = v0 * 60 + ((clientY - r.top - grabOffset) / PX) * 60;
+  return Math.max(v0 * 60, Math.min(v1 * 60 - SLOT, Math.round(min / SLOT) * SLOT));
 }
 
 export function setupDrag(onOpenTask) {
