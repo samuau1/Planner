@@ -2,11 +2,12 @@
 import { currentUser, signIn, signOut, AuthError, NetworkError, onOutboxChange, pendingChanges, clearOutbox } from './api.js';
 import {
   state, onChange, refresh, loadSnapshot, clearSnapshot, create, update, remove, toggleDone, setProjectStatus,
-  getTask, getProject, areas, exportAll, byOrder, planImport, runImport, setProgressValue,
+  getTask, getProject, areas, exportAll, byOrder, planImport, runImport, setProgressValue, finishTask,
 } from './store.js';
 import * as V from './views.js';
 import { projectsView, projectView } from './project.js';
-import { planView, setupDrag, fillDay, dragging } from './plan.js';
+import { planView, setupDrag, fillDay, dragging, dayView, blockPanel, toggleItem, addProjectTime, itemByKey } from './plan.js';
+import { calendarView, projectsTimelineView, setupCalendarDrag, calDragging } from './calendar.js';
 import { setWorkday, resetWorkday, saveSettings, usualWeek } from './store.js';
 import { writingView, updateWritingInputs, setDraft, saveCounts, deleteDay, addChapter, saveWritingSettings, earnedBadges } from './writing.js';
 import { today, addDays } from './util.js';
@@ -34,12 +35,15 @@ function mainHTML(r) {
     case 'writing': return writingView(ui);
     case 'settings': return V.settingsView(currentUser()?.email, pendingChanges(), ui.importPlan, ui.importError, ui);
     case 'plan': return planView(ui);
+    case 'calendar': return calendarView(ui);
+    case 'timeline': return projectsTimelineView(ui);
+    case 'day': return r.id ? dayView(r.id) : V.todayView(ui);
     default: return V.todayView(ui);
   }
 }
 
 function render() {
-  if (dragging()) { setTimeout(render, 250); return; }
+  if (dragging() || calDragging()) { setTimeout(render, 250); return; }
   if (!currentUser()) {
     root.innerHTML = V.loginView(ui.loginError || '');
     document.title = 'Sign in';
@@ -65,7 +69,7 @@ function render() {
   $('#main').innerHTML = `<div class="page">${mainHTML(r)}</div>`;
   if (keepId) document.getElementById(keepId)?.focus();
   if (r.name === 'writing') { updateWritingInputs(); checkBadges(); }
-  const titles = { today: 'Today', inbox: 'Inbox', projects: 'Projects', settings: 'Settings', writing: 'Word counter', plan: 'Plan your day' };
+  const titles = { today: 'Today', inbox: 'Inbox', projects: 'Projects', settings: 'Settings', writing: 'Word counter', plan: 'Plan your day', calendar: 'Calendar', timeline: 'Timeline', day: 'Day' };
   document.title = r.name === 'project' ? (getProject(r.id)?.name || 'Project') : titles[r.name] || 'Today';
   if (ui.panel && !panelTargetExists()) closePanel();
   renderStatus();
@@ -74,6 +78,7 @@ function render() {
 function panelTargetExists() {
   if (ui.panel.type === 'task') return !!getTask(ui.panel.id);
   if (ui.panel.type === 'project') return !!getProject(ui.panel.id);
+  if (ui.panel.type === 'block') return state.time_blocks.some((b) => b.id === ui.panel.id);
   return true;
 }
 
@@ -83,6 +88,7 @@ function renderPanel() {
   if (!ui.panel) { panel.hidden = true; $('.scrim').hidden = true; document.body.classList.remove('panel-open'); return; }
   const keep = document.activeElement && panel.contains(document.activeElement) ? document.activeElement.id : null;
   panel.innerHTML = ui.panel.type === 'task' ? V.taskPanel(ui.panel.id)
+    : ui.panel.type === 'block' ? blockPanel(ui.panel.id)
     : ui.panel.type === 'project' ? V.projectPanel(ui.panel.id, ui.confirmDelete)
       : V.quickAddPanel();
   panel.hidden = false;
@@ -172,6 +178,25 @@ setInterval(() => { if (document.visibilityState === 'visible') sync(); }, 60000
 const actions = {
   'toggle-done': (id) => { toggleDone(id); if (ui.panel?.id === id) renderPanel(); },
   'open-task': (id) => openPanel('task', id),
+  'open-item': (key) => openItem(key),
+  'toggle-item': (key, btn) => {
+    toggleItem(key, btn.dataset.day || today(), toggleDone);
+    if (ui.panel && key.endsWith(ui.panel.id)) renderPanel();
+  },
+  'finish-task': (id) => { finishTask(id); renderPanel(); toast('Finished. Well done!'); },
+  'cal-mode': (mode) => { ui.calMode = mode; render(); },
+  'cal-go': (day) => { ui.calAnchor = day; render(); },
+  'block-delete': (id) => { closePanel(); remove('time_blocks', id); toast('Project time removed'); },
+  'block-again': (id) => {
+    const b = state.time_blocks.find((x) => x.id === id);
+    if (!b) return;
+    addProjectTime(addDays(b.day, 1), b.project_id, b.block_minutes);
+    toast('Added to the next day');
+  },
+  'block-again-today': (id) => {
+    const b = state.time_blocks.find((x) => x.id === id);
+    if (b) addProjectTime(today(), b.project_id, b.block_minutes);
+  },
   'close-panel': () => closePanel(),
   'quick-add': () => openPanel('quick', null, 'qa-title'),
   'move-earlier': () => {
@@ -247,6 +272,11 @@ const actions = {
   },
 };
 
+function openItem(key) {
+  const [kind, id] = key.split(':');
+  openPanel(kind === 'block' ? 'block' : 'task', id);
+}
+
 function moveArea(id, dir) {
   const list = areas();
   const i = list.findIndex((a) => a.id === id), j = i + dir;
@@ -315,6 +345,12 @@ const forms = {
     if (!Number.isFinite(v)) return;
     setProgressValue(form.dataset.id, v);
     toast('Progress updated');
+  },
+  'project-time': (form) => {
+    const day = form.dataset.day;
+    const p = document.getElementById(`pt-project-${day}`).value;
+    const len = Number(document.getElementById(`pt-length-${day}`).value) || 120;
+    if (p) { addProjectTime(day, p, len); toast('Project time added. Drag it onto the timeline.'); }
   },
   'today-hours': () => {
     const on = $('#th-work').checked;
@@ -394,6 +430,7 @@ document.addEventListener('change', async (e) => {
     let value = el.type === 'checkbox' ? el.checked : el.value;
     if (['estimate_minutes', 'progress_target', 'block_minutes'].includes(field)) value = numberOrNull(value);
     else if (field === 'start_time') value = value || null;
+    if (kind === 'time_blocks' && field === 'day' && !value) return;
     else if (['planned_date', 'deadline', 'start_date', 'project_id', 'area_id', 'repeat_rule', 'parent_id'].includes(field)) value = value || null;
     else if (['title', 'name'].includes(field)) {
       value = value.trim();
@@ -402,9 +439,10 @@ document.addEventListener('change', async (e) => {
     if (kind === 'projects' && field === 'status') setProjectStatus(id, value);
     else if (kind === 'tasks' && field === 'planned_date') { update(kind, id, { planned_date: value, start_time: null }); renderPanel(); }
     else update(kind, id, { [field]: value });
-    if (['progress_type', 'emoji'].includes(field)) renderPanel();
+    if (['progress_type', 'emoji', 'ongoing'].includes(field)) renderPanel();
     return;
   }
+  if (el.id === 'tl-subs') { ui.tlSubs = el.checked; render(); return; }
   if (el.id === 'th-work') { $('#th-start').disabled = !el.checked; $('#th-end').disabled = !el.checked; return; }
   if (el.dataset.subDone) { update('subtasks', el.dataset.subDone, { done: el.checked }); renderPanel(); return; }
   if (el.dataset.subTitle) {
@@ -440,7 +478,8 @@ if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('./sw.js').catch(() => {});
 }
 
-setupDrag((id) => openPanel('task', id));
+setupDrag((key) => openItem(key));
+setupCalendarDrag((key) => openItem(key));
 if (currentUser()) loadSnapshot();
 render();
 sync();

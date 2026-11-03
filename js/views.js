@@ -1,18 +1,20 @@
 // Each function returns the HTML for one part of the screen.
 import {
   state, areas, topProjects, children, subtasksOf, getProject, getTask, projectPath, byOrder, rootOf, wcTotal,
-  workHours, usualWeek, isCustomDay,
+  workHours, usualWeek, isCustomDay, doneOn,
 } from './store.js';
 import { esc, today, niceDate, longDate, fmtMinutes, addDays, parseISO, iso, REPEAT_LABELS, ESTIMATES } from './util.js';
 import { APP_NAME } from '../config.js';
 import { colorOf, emojiOf, badge, EMOJIS, PALETTE, COLOR_NAMES } from './look.js';
-import { timeline, tray, loadLine, TIME_OPTIONS, LENGTH_OPTIONS } from './plan.js';
+import { dayCore, dayItems, TIME_OPTIONS, LENGTH_OPTIONS } from './plan.js';
 
 const icon = {
   today: '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="3.2"/><path d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.7 4.7l1.4 1.4M13.9 13.9l1.4 1.4M4.7 15.3l1.4-1.4M13.9 6.1l1.4-1.4"/></svg>',
   inbox: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 11.5V15a1.5 1.5 0 0 0 1.5 1.5h11A1.5 1.5 0 0 0 17 15v-3.5M3 11.5 5 4h10l2 7.5M3 11.5h4l1 2h4l1-2h4"/></svg>',
   projects: '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="3.5" width="14" height="13" rx="2"/><path d="M3 8h14M7.5 8v8.5"/></svg>',
   settings: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6h12M4 10h12M4 14h12"/><circle cx="7.5" cy="6" r="1.6"/><circle cx="12.5" cy="10" r="1.6"/><circle cx="8.5" cy="14" r="1.6"/></svg>',
+  calendar: '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="4.5" width="14" height="12.5" rx="2"/><path d="M3 8.5h14M7 3v3M13 3v3"/></svg>',
+  timeline: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h8M6 10h10M4 15h7"/></svg>',
   pen: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 16l1-4 8.5-8.5a2.1 2.1 0 0 1 3 3L8 15l-4 1zM12 5l3 3"/></svg>',
   plus: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg>',
   flag: '<svg viewBox="0 0 20 20" class="flag" aria-label="Priority"><path d="M5 17V3.5M5 4h9l-2 3.5 2 3.5H5"/></svg>',
@@ -52,6 +54,8 @@ export function sidebar(route) {
     <div class="brand">${esc(APP_NAME)}</div>
     <a href="#/today" class="nav-item"${active('today')}>${icon.today}<span>Today</span>${todayCount ? `<span class="count">${todayCount}</span>` : ''}</a>
     <a href="#/inbox" class="nav-item"${active('inbox')}>${icon.inbox}<span>Inbox</span>${inboxCount ? `<span class="count">${inboxCount}</span>` : ''}</a>
+    <a href="#/calendar" class="nav-item"${active('calendar') || active('day')}>${icon.calendar}<span>Calendar</span></a>
+    <a href="#/timeline" class="nav-item"${active('timeline')}>${icon.timeline}<span>Timeline</span></a>
     <a href="#/projects" class="nav-item"${active('projects')}>${icon.projects}<span>Projects</span></a>
     <a href="#/writing" class="nav-item"${active('writing')}>${icon.pen}<span>Word counter</span>${state.wc.chapters.length ? `<span class="count">${wcTotal().toLocaleString('en-US')}</span>` : ''}</a>
     <div class="nav-projects">
@@ -86,6 +90,7 @@ export function groupByArea(projects) {
 
 export function taskRow(t, { showProject = true, showPlanned = true } = {}) {
   const subs = subtasksOf(t.id);
+  const isDone = doneOn(t, today());
   const meta = [];
   if (showProject && t.project_id) {
     const root = rootOf(getProject(t.project_id));
@@ -98,8 +103,9 @@ export function taskRow(t, { showProject = true, showPlanned = true } = {}) {
   }
   if (t.estimate_minutes) meta.push(`<span>${fmtMinutes(t.estimate_minutes)}</span>`);
   if (subs.length) meta.push(`<span>${subs.filter((s) => s.done).length}/${subs.length}</span>`);
-  return `<li class="task${t.done ? ' done' : ''}">
-    <button type="button" class="check" data-act="toggle-done" data-id="${t.id}" aria-label="${t.done ? 'Mark not done' : 'Mark done'}: ${esc(t.title)}"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5.5 10.5l3 3 6-7"/></svg></button>
+  if (t.ongoing && !t.done) meta.unshift('<span class="ongoing-tag">↻ ongoing</span>');
+  return `<li class="task${isDone ? ' done' : ''}">
+    <button type="button" class="check" data-act="toggle-done" data-id="${t.id}" aria-label="${isDone ? 'Mark not done' : t.ongoing ? 'Done for today' : 'Mark done'}: ${esc(t.title)}"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5.5 10.5l3 3 6-7"/></svg></button>
     <button type="button" class="task-main" data-act="open-task" data-id="${t.id}">
       <span class="task-title">${t.priority ? icon.flag : ''}${esc(t.title)}${t.repeat_rule ? `<span class="repeat">${icon.repeat}</span>` : ''}</span>
       ${meta.length ? `<span class="task-meta">${meta.join('<span class="dot">·</span>')}</span>` : ''}
@@ -121,16 +127,16 @@ export function addTaskForm(key, { project = '', planned = '', placeholder = 'Ad
 export function todayView(ui) {
   const t = today();
   const all = state.tasks;
-  const earlier = all.filter((x) => !x.done && x.planned_date && x.planned_date < t).sort((a, b) => a.planned_date.localeCompare(b.planned_date) || byOrder(a, b));
-  const planned = all.filter((x) => !x.done && x.planned_date === t).sort(byOrder);
-  const doneToday = all.filter((x) => x.done && x.done_at && x.done_at.slice(0, 10) === t || (x.done && x.planned_date === t)).sort((a, b) => String(a.done_at).localeCompare(String(b.done_at)));
+  const earlier = all.filter((x) => !x.done && x.planned_date && x.planned_date < t).sort((a, b) => (b.ongoing - a.ongoing) || a.planned_date.localeCompare(b.planned_date) || byOrder(a, b));
+  const planned = all.filter((x) => !doneOn(x, t) && x.planned_date === t).sort(byOrder);
+  const doneToday = all.filter((x) => (x.done && x.done_at && x.done_at.slice(0, 10) === t) || (x.planned_date === t && doneOn(x, t))).sort((a, b) => String(a.done_at).localeCompare(String(b.done_at)));
   const dueSoon = all.filter((x) => !x.done && x.deadline && x.deadline <= addDays(t, 3) && x.planned_date !== t && !(x.planned_date && x.planned_date < t)).sort((a, b) => a.deadline.localeCompare(b.deadline));
   const mins = totalMinutes(planned);
   const uniqueDone = [...new Map(doneToday.map((x) => [x.id, x])).values()];
   return `<header class="page-head">
       <p class="eyebrow">${esc(longDate(t))}</p>
       <h1>Today</h1>
-      <p class="muted">${planned.length ? `${planned.length} task${planned.length === 1 ? '' : 's'} planned${mins ? ` · ${fmtMinutes(mins)} estimated` : ''}` : 'Nothing planned yet.'}${uniqueDone.length ? ` · ${uniqueDone.length} done` : ''}</p>
+      <p class="muted">${(() => { const its = dayItems(t); const open = its.filter((i) => !i.done).length, done = its.length - open; return its.length ? `${open} to do${done ? ` · ${done} done` : ''}` : 'Nothing planned yet.'; })()}</p>
     </header>
     ${state.settings.lastPlanned !== t && ui.hidePlanBanner !== t ? `<section class="plan-banner">
       <div><strong>Good ${new Date().getHours() < 12 ? 'morning' : new Date().getHours() < 18 ? 'afternoon' : 'evening'}.</strong> Take a few minutes to plan your day.</div>
@@ -138,13 +144,12 @@ export function todayView(ui) {
     </section>` : ''}
     ${earlier.length ? `<section class="block">
       <div class="block-head"><h2>From earlier</h2><button type="button" class="btn small" data-act="move-earlier">Move all to today</button></div>
+      <p class="muted small">Unfinished tasks and ongoing work from past days.</p>
       ${taskList(earlier)}
     </section>` : ''}
     <section class="block">
-      <div class="block-head"><h2>Your day</h2><a class="link small" href="#/plan">Plan or change the day</a></div>
-      ${loadLine(t)}
-      ${addTaskForm('today', { planned: t, placeholder: 'Add a task for today' })}
-      <div class="day-grid">${tray(t)}${timeline(t)}</div>
+      <div class="block-head"><h2>Your day</h2><span class="head-links"><a class="link small" href="#/calendar">Calendar</a><a class="link small" href="#/plan">Plan or change the day</a></span></div>
+      ${dayCore(t)}
     </section>
     ${dueSoon.length ? `<section class="block">
       <div class="block-head"><h2>Due soon</h2></div>
@@ -327,7 +332,11 @@ export function taskPanel(id) {
         <label>Time estimate<select data-field="estimate_minutes" data-kind="tasks" data-id="${t.id}" id="task-estimate"><option value="">None</option>${estOptions.map((m) => `<option value="${m}"${m === est ? ' selected' : ''}>${fmtMinutes(m)}</option>`).join('')}</select></label>
         <label>Repeat<select data-field="repeat_rule" data-kind="tasks" data-id="${t.id}" id="task-repeat"><option value="">Doesn't repeat</option>${Object.entries(REPEAT_LABELS).map(([k, v]) => `<option value="${k}"${t.repeat_rule === k ? ' selected' : ''}>${v}</option>`).join('')}</select></label>
       </div>
-      <label class="toggle"><input type="checkbox" data-field="priority" data-kind="tasks" data-id="${t.id}" id="task-priority"${t.priority ? ' checked' : ''}> Priority</label>
+      <div class="toggle-row">
+        <label class="toggle"><input type="checkbox" data-field="priority" data-kind="tasks" data-id="${t.id}" id="task-priority"${t.priority ? ' checked' : ''}> Priority</label>
+        <label class="toggle" title="Ticking an ongoing task means done for today. It stays open for the next day."><input type="checkbox" data-field="ongoing" data-kind="tasks" data-id="${t.id}" id="task-ongoing"${t.ongoing ? ' checked' : ''}> Ongoing work</label>
+      </div>
+      ${t.ongoing ? `<p class="muted small">Ticking it means done for today; it stays open and comes back when you plan the next day.${state.task_sessions.filter((x) => x.task_id === t.id).length ? ` Worked on ${state.task_sessions.filter((x) => x.task_id === t.id).length} day${state.task_sessions.filter((x) => x.task_id === t.id).length === 1 ? '' : 's'} so far.` : ''}</p>` : ''}
       <div class="subtasks">
         <div class="field-label">Subtasks</div>
         <ul>${subs.map((s) => `<li class="${s.done ? 'done' : ''}">
@@ -340,6 +349,7 @@ export function taskPanel(id) {
       <label>Notes<textarea rows="5" data-field="notes" data-kind="tasks" data-id="${t.id}" id="task-notes">${esc(t.notes)}</textarea></label>
     </div>
     <div class="panel-foot">
+      ${t.ongoing && !t.done ? `<button type="button" class="btn" data-act="finish-task" data-id="${t.id}">Finished for good</button>` : ''}
       <button type="button" class="btn ghost danger" data-act="task-delete" data-id="${t.id}">Delete task</button>
     </div>`;
 }

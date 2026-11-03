@@ -3,12 +3,12 @@
 import { db, enqueue, flush, pendingChanges, currentUser } from './api.js';
 import { uuid, today, nextRepeat, daysBetween, addDays } from './util.js';
 
-const TABLES = ['areas', 'projects', 'tasks', 'subtasks', 'progress_log'];
+const TABLES = ['areas', 'projects', 'tasks', 'subtasks', 'progress_log', 'task_sessions', 'time_blocks'];
 const WC = { chapters: 'wc_chapters', entries: 'wc_entries', settings: 'wc_settings' };
 const SNAPSHOT_KEY = 'planner.snapshot';
 
 export const state = {
-  areas: [], projects: [], tasks: [], subtasks: [], progress_log: [],
+  areas: [], projects: [], tasks: [], subtasks: [], progress_log: [], task_sessions: [], time_blocks: [],
   wc: { chapters: [], entries: [], settings: null },
   workdays: [], settings: {},
   loaded: false, offline: false, needsUpdate: false,
@@ -68,7 +68,7 @@ export async function refresh() {
   state.wc = { chapters, entries, settings: settings[0] || null };
   state.workdays = workdays;
   state.settings = userSettings[0]?.data || {};
-  state.needsUpdate = missing || (settings[0] && !('off_days' in settings[0])) || (results[1][0] && !('emoji' in results[1][0]));
+  state.needsUpdate = missing || (settings[0] && !('off_days' in settings[0])) || (results[1][0] && !('emoji' in results[1][0])) || (results[2][0] && !('ongoing' in results[2][0]));
   state.loaded = true;
   state.offline = false;
   emit();
@@ -84,10 +84,12 @@ const DEFAULTS = {
   }),
   tasks: () => ({
     project_id: null, title: '', notes: '', planned_date: null, deadline: null, estimate_minutes: null,
-    priority: false, repeat_rule: null, start_time: null, block_minutes: null, done: false, done_at: null,
+    priority: false, repeat_rule: null, start_time: null, block_minutes: null, done: false, done_at: null, ongoing: false,
   }),
   subtasks: () => ({ title: '', done: false }),
   progress_log: () => ({}),
+  task_sessions: () => ({}),
+  time_blocks: () => ({ start_time: null, block_minutes: 60, done: false, note: '' }),
 };
 
 export function create(table, fields) {
@@ -95,6 +97,7 @@ export function create(table, fields) {
   state[table].push(row);
   const send = { ...row };
   if (table === 'projects' && state.needsUpdate) { delete send.emoji; delete send.color; }
+  if (table === 'tasks' && state.needsUpdate) delete send.ongoing;
   enqueue({ type: 'insert', table, row: send });
   emit();
   return row;
@@ -119,7 +122,10 @@ export function remove(table, id) {
     const taskIds = new Set(state.tasks.filter((t) => gone.has(t.project_id)).map((t) => t.id));
     state.tasks = state.tasks.filter((t) => !taskIds.has(t.id));
     state.subtasks = state.subtasks.filter((s) => !taskIds.has(s.task_id));
+    state.task_sessions = state.task_sessions.filter((s) => !taskIds.has(s.task_id));
+    state.time_blocks = state.time_blocks.filter((b) => !gone.has(b.project_id));
   }
+  if (table === 'tasks') state.task_sessions = state.task_sessions.filter((s) => s.task_id !== id);
   if (table === 'tasks') state.subtasks = state.subtasks.filter((s) => s.task_id !== id);
   if (table === 'areas') state.projects.forEach((p) => { if (p.area_id === id) p.area_id = null; });
   enqueue({ type: 'delete', table, id });
@@ -186,9 +192,22 @@ export function progress(p) {
 
 // ---- Task actions
 
-export function toggleDone(id) {
+// An ongoing task counts as done on the days it was worked on, and stays open.
+export const workedOn = (id, day) => state.task_sessions.some((s) => s.task_id === id && s.day === day);
+export const doneOn = (t, day) => t.done || (t.ongoing && workedOn(t.id, day));
+
+export function finishTask(id) {
+  update('tasks', id, { done: true, done_at: new Date().toISOString() });
+}
+
+export function toggleDone(id, day = today()) {
   const t = getTask(id);
   if (!t) return;
+  if (t.ongoing && !t.done) {
+    const s = state.task_sessions.find((x) => x.task_id === id && x.day === day);
+    if (s) remove('task_sessions', s.id); else create('task_sessions', { task_id: id, day });
+    return;
+  }
   const done = !t.done;
   update('tasks', id, { done, done_at: done ? new Date().toISOString() : null });
   if (done && t.repeat_rule) {
