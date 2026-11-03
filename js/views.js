@@ -7,6 +7,7 @@ import { esc, today, niceDate, longDate, fmtMinutes, addDays, parseISO, iso, REP
 import { APP_NAME } from '../config.js';
 import { colorOf, emojiOf, badge, EMOJIS, PALETTE, COLOR_NAMES } from './look.js';
 import { dayCore, dayItems, TIME_OPTIONS, LENGTH_OPTIONS } from './plan.js';
+import { currentItemKey as currentFocusKey } from './focus.js';
 
 const icon = {
   today: '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="3.2"/><path d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.7 4.7l1.4 1.4M13.9 13.9l1.4 1.4M4.7 15.3l1.4-1.4M13.9 6.1l1.4-1.4"/></svg>',
@@ -15,6 +16,7 @@ const icon = {
   settings: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 6h12M4 10h12M4 14h12"/><circle cx="7.5" cy="6" r="1.6"/><circle cx="12.5" cy="10" r="1.6"/><circle cx="8.5" cy="14" r="1.6"/></svg>',
   calendar: '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="3" y="4.5" width="14" height="12.5" rx="2"/><path d="M3 8.5h14M7 3v3M13 3v3"/></svg>',
   timeline: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h8M6 10h10M4 15h7"/></svg>',
+  focus: '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7"/><path d="M10 6v4l2.5 2"/></svg>',
   pen: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 16l1-4 8.5-8.5a2.1 2.1 0 0 1 3 3L8 15l-4 1zM12 5l3 3"/></svg>',
   plus: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg>',
   flag: '<svg viewBox="0 0 20 20" class="flag" aria-label="Priority"><path d="M5 17V3.5M5 4h9l-2 3.5 2 3.5H5"/></svg>',
@@ -57,6 +59,7 @@ export function sidebar(route) {
     <a href="#/calendar" class="nav-item"${active('calendar') || active('day')}>${icon.calendar}<span>Calendar</span></a>
     <a href="#/timeline" class="nav-item"${active('timeline')}>${icon.timeline}<span>Timeline</span></a>
     <a href="#/projects" class="nav-item"${active('projects')}>${icon.projects}<span>Projects</span></a>
+    <a href="#/focus" class="nav-item"${active('focus')}>${icon.focus}<span>Focus</span></a>
     <a href="#/writing" class="nav-item"${active('writing')}>${icon.pen}<span>Word counter</span>${state.wc.chapters.length ? `<span class="count">${wcTotal().toLocaleString('en-US')}</span>` : ''}</a>
     <div class="nav-projects">
       ${groups.map((g) => `<div class="nav-area">
@@ -136,6 +139,7 @@ export function todayView(ui) {
   return `<header class="page-head">
       <p class="eyebrow">${esc(longDate(t))}</p>
       <h1>Today</h1>
+      <div class="head-actions"><a class="btn focus-btn" href="#/focus/${encodeURIComponent(currentFocusKey() || '')}">◐ Focus</a></div>
       <p class="muted">${(() => { const its = dayItems(t); const open = its.filter((i) => !i.done).length, done = its.length - open; return its.length ? `${open} to do${done ? ` · ${done} done` : ''}` : 'Nothing planned yet.'; })()}</p>
     </header>
     ${state.settings.lastPlanned !== t && ui.hidePlanBanner !== t ? `<section class="plan-banner">
@@ -349,6 +353,7 @@ export function taskPanel(id) {
       <label>Notes<textarea rows="5" data-field="notes" data-kind="tasks" data-id="${t.id}" id="task-notes">${esc(t.notes)}</textarea></label>
     </div>
     <div class="panel-foot">
+      <button type="button" class="btn focus-btn" data-act="focus-start" data-id="task:${t.id}">◐ Focus</button>
       ${t.ongoing && !t.done ? `<button type="button" class="btn" data-act="finish-task" data-id="${t.id}">Finished for good</button>` : ''}
       <button type="button" class="btn ghost danger" data-act="task-delete" data-id="${t.id}">Delete task</button>
     </div>`;

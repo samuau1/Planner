@@ -8,6 +8,9 @@ import * as V from './views.js';
 import { projectsView, projectView } from './project.js';
 import { planView, setupDrag, fillDay, dragging, dayView, blockPanel, toggleItem, addProjectTime, itemByKey } from './plan.js';
 import { calendarView, projectsTimelineView, setupCalendarDrag, calDragging } from './calendar.js';
+import {
+  focusHTML, openFocus, focusAction, closeFocus, pickFocus, setBackground, setCustomBackground, removeCustomBackground, saveFocusTimes, currentItemKey,
+} from './focus.js';
 import { setWorkday, resetWorkday, saveSettings, usualWeek } from './store.js';
 import { writingView, updateWritingInputs, setDraft, saveCounts, deleteDay, addChapter, saveWritingSettings, earnedBadges } from './writing.js';
 import { today, addDays } from './util.js';
@@ -38,6 +41,7 @@ function mainHTML(r) {
     case 'calendar': return calendarView(ui);
     case 'timeline': return projectsTimelineView(ui);
     case 'day': return r.id ? dayView(r.id) : V.todayView(ui);
+    case 'focus': return V.todayView(ui);
     default: return V.todayView(ui);
   }
 }
@@ -58,7 +62,8 @@ function render() {
     <div class="scrim" data-act="close-panel" hidden></div>
     <aside id="panel" class="panel" hidden aria-label="Details"></aside>
     <div id="status" class="status" role="status"></div>
-    <div id="toast" class="toast" role="status" hidden></div>`;
+    <div id="toast" class="toast" role="status" hidden></div>
+    <div id="focus" hidden></div>`;
   }
   const r = route();
   // Keep the cursor where it was when the screen redraws.
@@ -69,11 +74,25 @@ function render() {
   $('#main').innerHTML = `<div class="page">${mainHTML(r)}</div>`;
   if (keepId) document.getElementById(keepId)?.focus();
   if (r.name === 'writing') { updateWritingInputs(); checkBadges(); }
+  renderFocus(r);
   const titles = { today: 'Today', inbox: 'Inbox', projects: 'Projects', settings: 'Settings', writing: 'Word counter', plan: 'Plan your day', calendar: 'Calendar', timeline: 'Timeline', day: 'Day' };
   document.title = r.name === 'project' ? (getProject(r.id)?.name || 'Project') : titles[r.name] || 'Today';
   if (ui.panel && !panelTargetExists()) closePanel();
   renderStatus();
 }
+
+function renderFocus(r) {
+  const fx = $('#focus');
+  if (!fx) return;
+  if (r.name !== 'focus') { if (!fx.hidden) { fx.hidden = true; fx.innerHTML = ''; document.body.classList.remove('focus-on'); } return; }
+  openFocus(r.id ? decodeURIComponent(r.id) : null);
+  const entering = fx.hidden;
+  fx.innerHTML = focusHTML(ui);
+  if (entering) fx.firstElementChild?.classList.add('enter');
+  fx.hidden = false;
+  document.body.classList.add('focus-on');
+}
+document.addEventListener('focus-repaint', () => render());
 
 function panelTargetExists() {
   if (ui.panel.type === 'task') return !!getTask(ui.panel.id);
@@ -179,6 +198,21 @@ const actions = {
   'toggle-done': (id) => { toggleDone(id); if (ui.panel?.id === id) renderPanel(); },
   'open-task': (id) => openPanel('task', id),
   'open-item': (key) => openItem(key),
+  'focus-start': (key) => { closePanel(); openFocus(key); location.hash = `#/focus/${encodeURIComponent(key)}`; },
+  'focus-pick': (key) => { pickFocus(key); location.hash = `#/focus/${encodeURIComponent(key)}`; },
+  'focus-play': () => { focusAction('play'); render(); },
+  'focus-reset': () => focusAction('reset'),
+  'focus-skip': () => { focusAction('skip'); render(); },
+  'focus-mode': (mode) => { focusAction('mode', mode); render(); },
+  'focus-close': () => {
+    closeFocus(); ui.focusSheet = false;
+    if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+    location.hash = '#/today';
+  },
+  'focus-bg': () => { ui.focusSheet = !ui.focusSheet; render(); },
+  'focus-full': () => { if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {}); else document.documentElement.requestFullscreen?.().catch(() => toast('Full screen isn’t available here')); },
+  'focus-set-bg': (id) => { setBackground(id); },
+  'focus-remove-bg': async () => { await removeCustomBackground(); render(); },
   'toggle-item': (key, btn) => {
     toggleItem(key, btn.dataset.day || today(), toggleDone);
     if (ui.panel && key.endsWith(ui.panel.id)) renderPanel();
@@ -297,6 +331,8 @@ document.addEventListener('click', (e) => {
 });
 
 document.addEventListener('keydown', (e) => {
+  if (route().name === 'focus' && e.key === ' ' && !/INPUT|TEXTAREA|SELECT|BUTTON/.test(e.target.tagName)) { e.preventDefault(); focusAction('play'); render(); return; }
+  if (route().name === 'focus' && e.key === 'Escape') { if (ui.focusSheet) { ui.focusSheet = false; render(); } return; }
   if (e.key === 'Escape' && ui.panel) closePanel();
   if (e.key === 'Enter' && e.target.classList?.contains('title-input')) { e.preventDefault(); e.target.blur(); }
 });
@@ -345,6 +381,13 @@ const forms = {
     if (!Number.isFinite(v)) return;
     setProgressValue(form.dataset.id, v);
     toast('Progress updated');
+  },
+  'focus-times': () => {
+    const n = (id, lo, hi, d) => Math.min(hi, Math.max(lo, Math.round(Number($(id).value) || d)));
+    saveFocusTimes({ focus: n('#fx-t-focus', 5, 120, 25), short: n('#fx-t-short', 1, 30, 5), long: n('#fx-t-long', 5, 60, 15), every: n('#fx-t-every', 2, 8, 4) });
+    ui.focusSheet = false;
+    toast('Timer saved');
+    render();
   },
   'project-time': (form) => {
     const day = form.dataset.day;
@@ -440,6 +483,11 @@ document.addEventListener('change', async (e) => {
     else if (kind === 'tasks' && field === 'planned_date') { update(kind, id, { planned_date: value, start_time: null }); renderPanel(); }
     else update(kind, id, { [field]: value });
     if (['progress_type', 'emoji', 'ongoing'].includes(field)) renderPanel();
+    return;
+  }
+  if (el.id === 'fx-file' && el.files?.[0]) {
+    try { await setCustomBackground(el.files[0]); toast('Background set'); } catch { toast('That picture couldn’t be used. Try a JPEG or PNG.'); }
+    render();
     return;
   }
   if (el.id === 'tl-subs') { ui.tlSubs = el.checked; render(); return; }

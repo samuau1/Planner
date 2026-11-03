@@ -125,6 +125,7 @@ export function timeline(day) {
         style="top:${y(s)}px;height:${y(e) - y(s) - 2}px;left:calc(${(col / cols) * 100}% + 2px);width:calc(${100 / cols}% - 4px)">
       <button type="button" class="check small-check" data-act="toggle-item" data-id="${it.key}" data-day="${day}" aria-label="${it.done ? 'Mark not done' : it.ongoing ? 'Done for today' : 'Mark done'}: ${esc(it.title)}">${checkSvg}</button>
       <span class="tl-text"><span class="tl-title">${label(it)}</span><span class="tl-time">${toTime(s)}–${toTime(e)}</span></span>
+      ${it.done ? '' : `<button type="button" class="tl-focus" data-act="focus-start" data-id="${it.key}" aria-label="Focus on ${esc(it.title)}" title="Focus">◐</button>`}
       <span class="tl-resize" data-resize="${it.key}" aria-hidden="true"></span>
     </div>`).join('');
   return `<div class="tl" data-day="${day}" data-start="${v0}" data-end="${v1}" style="height:${(v1 - v0) * PX}px">${hours}${band}${now}<div class="tl-lane">${blocks}</div></div>`;
@@ -219,6 +220,7 @@ export function blockPanel(id) {
       <label>Note<textarea rows="3" data-field="note" data-kind="time_blocks" data-id="${b.id}" id="pb-note" placeholder="What you want to get done">${esc(b.note)}</textarea></label>
     </div>
     <div class="panel-foot">
+      <button type="button" class="btn focus-btn" data-act="focus-start" data-id="block:${b.id}">◐ Focus</button>
       <button type="button" class="btn ghost" data-act="block-again" data-id="${b.id}">Again tomorrow</button>
       <button type="button" class="btn ghost danger" data-act="block-delete" data-id="${b.id}">Remove from the day</button>
     </div>`;

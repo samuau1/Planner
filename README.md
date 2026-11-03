@@ -23,6 +23,7 @@ A personal task manager, day planner and project manager. It runs in the browser
 | `js/look.js` | Project colours and emojis |
 | `js/plan.js` | The day timeline, daily planning, project time, drag and drop |
 | `js/calendar.js` | Month and week calendar, and the timeline of all projects |
+| `js/focus.js` | Focus mode: timer, backgrounds, your own picture |
 | `supabase/schema.sql` | Database tables and privacy rules |
 | `supabase/002_colours_progress_writing.sql` | Update 2: emojis, colours, progress history, word counter settings |
 | `supabase/003_settings.sql` | Update 3: personal settings such as your usual working hours |
@@ -45,5 +46,5 @@ Any static file server works, for example `python3 -m http.server` in this folde
 2. Daily planning with time blocks and working days ✓
 3. Calendar and Timeline ✓, plus ongoing tasks and project time
 4. Dissertation word counter ✓ (brought forward)
-4. Focus mode
+4. Focus mode ✓
 5. Insights and the Done log
