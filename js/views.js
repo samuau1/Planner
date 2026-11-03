@@ -1,10 +1,12 @@
 // Each function returns the HTML for one part of the screen.
 import {
   state, areas, topProjects, children, subtasksOf, getProject, getTask, projectPath, byOrder, rootOf, wcTotal,
+  workHours, usualWeek, isCustomDay,
 } from './store.js';
-import { esc, today, niceDate, longDate, fmtMinutes, addDays, REPEAT_LABELS, ESTIMATES } from './util.js';
+import { esc, today, niceDate, longDate, fmtMinutes, addDays, parseISO, iso, REPEAT_LABELS, ESTIMATES } from './util.js';
 import { APP_NAME } from '../config.js';
 import { colorOf, emojiOf, badge, EMOJIS, PALETTE, COLOR_NAMES } from './look.js';
+import { timeline, tray, loadLine, TIME_OPTIONS, LENGTH_OPTIONS } from './plan.js';
 
 const icon = {
   today: '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="3.2"/><path d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.7 4.7l1.4 1.4M13.9 13.9l1.4 1.4M4.7 15.3l1.4-1.4M13.9 6.1l1.4-1.4"/></svg>',
@@ -130,13 +132,19 @@ export function todayView(ui) {
       <h1>Today</h1>
       <p class="muted">${planned.length ? `${planned.length} task${planned.length === 1 ? '' : 's'} planned${mins ? ` · ${fmtMinutes(mins)} estimated` : ''}` : 'Nothing planned yet.'}${uniqueDone.length ? ` · ${uniqueDone.length} done` : ''}</p>
     </header>
+    ${state.settings.lastPlanned !== t && ui.hidePlanBanner !== t ? `<section class="plan-banner">
+      <div><strong>Good ${new Date().getHours() < 12 ? 'morning' : new Date().getHours() < 18 ? 'afternoon' : 'evening'}.</strong> Take a few minutes to plan your day.</div>
+      <div class="chip-row"><a class="btn primary" href="#/plan">Plan my day</a><button type="button" class="btn ghost" data-act="hide-plan-banner">Not today</button></div>
+    </section>` : ''}
     ${earlier.length ? `<section class="block">
       <div class="block-head"><h2>From earlier</h2><button type="button" class="btn small" data-act="move-earlier">Move all to today</button></div>
       ${taskList(earlier)}
     </section>` : ''}
     <section class="block">
-      ${taskList(planned, { showPlanned: false })}
+      <div class="block-head"><h2>Your day</h2><a class="link small" href="#/plan">Plan or change the day</a></div>
+      ${loadLine(t)}
       ${addTaskForm('today', { planned: t, placeholder: 'Add a task for today' })}
+      <div class="day-grid">${tray(t)}${timeline(t)}</div>
     </section>
     ${dueSoon.length ? `<section class="block">
       <div class="block-head"><h2>Due soon</h2></div>
@@ -178,10 +186,60 @@ function importSummary(pl) {
   return `This file adds ${list}.${pl.skipped ? ` ${pl.skipped} items you already have are skipped.` : ''}`;
 }
 
-export function settingsView(email, pending, importPlan, importError) {
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const timeOpts = (sel) => TIME_OPTIONS.concat(['23:00']).map((v) => `<option${v === sel ? ' selected' : ''}>${v}</option>`).join('');
+
+function workingHoursHTML(ui) {
+  const week = usualWeek();
+  const month = ui.wdMonth || today().slice(0, 7);
+  const [y, m] = month.split('-').map(Number);
+  const first = new Date(y, m - 1, 1), days = new Date(y, m, 0).getDate();
+  const lead = (first.getDay() + 6) % 7;
+  const cells = [];
+  for (let i = 0; i < lead; i++) cells.push('<span class="wd-cell empty"></span>');
+  for (let d = 1; d <= days; d++) {
+    const day = iso(new Date(y, m - 1, d)), h = workHours(day);
+    cells.push(`<button type="button" class="wd-cell${h ? ' on' : ' off'}${isCustomDay(day) ? ' custom' : ''}${day === today() ? ' is-today' : ''}${ui.wdSel === day ? ' sel' : ''}" data-act="wd-select" data-id="${day}">
+      <span class="wd-num">${d}</span><span class="wd-h">${h ? `${h.start.replace(':00', '')}–${h.end.replace(':00', '')}` : 'off'}</span></button>`);
+  }
+  const sel = ui.wdSel && ui.wdSel.startsWith(month) ? ui.wdSel : null;
+  const sh = sel ? workHours(sel) : null;
+  const prev = iso(new Date(y, m - 2, 1)).slice(0, 7), next = iso(new Date(y, m, 1)).slice(0, 7);
+  return `<section class="block">
+      <div class="block-head"><h2>Working hours</h2></div>
+      <p class="muted small">Your usual week. The day planner shades these hours and checks how full they are. You can still plan personal tasks outside them.</p>
+      <form class="week-form" data-form="usual-week">
+        ${[1, 2, 3, 4, 5, 6, 0].map((d) => `<div class="week-row">
+          <label class="toggle"><input type="checkbox" class="wk-on" data-day="${d}"${week[d] ? ' checked' : ''}> ${DAY_NAMES[d]}</label>
+          <select class="wk-start" data-day="${d}" aria-label="${DAY_NAMES[d]} from">${timeOpts(week[d]?.start || '08:00')}</select>
+          <span class="muted">to</span>
+          <select class="wk-end" data-day="${d}" aria-label="${DAY_NAMES[d]} to">${timeOpts(week[d]?.end || '16:00')}</select>
+        </div>`).join('')}
+        <button class="btn" type="submit">Save usual week</button>
+      </form>
+      <div class="wd-month">
+        <div class="block-head"><button type="button" class="btn small ghost" data-act="wd-month" data-id="${prev}" aria-label="Previous month">‹</button>
+          <h3>${first.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })}</h3>
+          <button type="button" class="btn small ghost" data-act="wd-month" data-id="${next}" aria-label="Next month">›</button></div>
+        <p class="muted small">Tap a day to change it, for example a morning-only day or a day off. Changed days are marked with a dot.</p>
+        <div class="wd-grid">${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((n) => `<span class="wd-dow">${n}</span>`).join('')}${cells.join('')}</div>
+        ${sel ? `<form class="hours-form" data-form="day-hours" data-day="${sel}">
+          <strong>${esc(longDate(sel))}</strong>
+          <label class="toggle"><input type="checkbox" id="dh-work"${sh ? ' checked' : ''}> Working</label>
+          <label>From<select id="dh-start">${timeOpts(sh?.start || '08:00')}</select></label>
+          <label>To<select id="dh-end">${timeOpts(sh?.end || '16:00')}</select></label>
+          <button class="btn small primary" type="submit">Save day</button>
+          ${isCustomDay(sel) ? `<button type="button" class="btn small ghost" data-act="wd-reset" data-id="${sel}">Use usual hours</button>` : ''}
+        </form>` : ''}
+      </div>
+    </section>`;
+}
+
+export function settingsView(email, pending, importPlan, importError, ui = {}) {
   const list = areas();
   return `<header class="page-head"><h1>Settings</h1></header>
-    ${state.needsUpdate ? `<section class="notice"><strong>Database update needed.</strong> Run the script <code>supabase/002_colours_progress_writing.sql</code> in Supabase's SQL Editor, then reload. Until then, emojis, colours and progress history can't be saved.</section>` : ''}
+    ${state.needsUpdate ? `<section class="notice"><strong>Database update needed.</strong> Run the newest scripts from the <code>supabase</code> folder (<code>002_colours_progress_writing.sql</code> and <code>003_settings.sql</code>) in Supabase's SQL Editor, then reload. Until then, some changes can't be saved.</section>` : ''}
+    ${workingHoursHTML(ui)}
     <section class="block">
       <div class="block-head"><h2>Areas</h2></div>
       <p class="muted small">Areas group your projects, such as Research, Teaching or Personal.</p>
@@ -256,6 +314,10 @@ export function taskPanel(id) {
         <label>Planned day<input type="date" value="${t.planned_date || ''}" data-field="planned_date" data-kind="tasks" data-id="${t.id}" id="task-planned"></label>
         <label>Deadline<input type="date" value="${t.deadline || ''}" data-field="deadline" data-kind="tasks" data-id="${t.id}" id="task-deadline"></label>
       </div>
+      ${t.planned_date ? `<div class="field-row">
+        <label>Time<select data-field="start_time" data-kind="tasks" data-id="${t.id}" id="task-time"><option value="">No time yet</option>${TIME_OPTIONS.map((v) => `<option value="${v}"${String(t.start_time || '').slice(0, 5) === v ? ' selected' : ''}>${v}</option>`).join('')}</select></label>
+        <label>Length on the day<select data-field="block_minutes" data-kind="tasks" data-id="${t.id}" id="task-length"><option value="">Same as estimate</option>${LENGTH_OPTIONS.map((m) => `<option value="${m}"${t.block_minutes === m ? ' selected' : ''}>${fmtMinutes(m)}</option>`).join('')}</select></label>
+      </div>` : ''}
       <div class="chip-row">
         <button type="button" class="chip" data-act="plan" data-id="${t.id}" data-when="today">Today</button>
         <button type="button" class="chip" data-act="plan" data-id="${t.id}" data-when="tomorrow">Tomorrow</button>

@@ -21,12 +21,14 @@ A personal task manager, day planner and project manager. It runs in the browser
 | `js/charts.js` | Progress graph and roadmap timeline |
 | `js/writing.js` | The dissertation word counter |
 | `js/look.js` | Project colours and emojis |
+| `js/plan.js` | The day timeline, daily planning and drag and drop |
 | `supabase/schema.sql` | Database tables and privacy rules |
 | `supabase/002_colours_progress_writing.sql` | Update 2: emojis, colours, progress history, word counter settings |
+| `supabase/003_settings.sql` | Update 3: personal settings such as your usual working hours |
 
 ## Setting up from scratch
 
-1. Create a Supabase project and run `supabase/schema.sql`, then `supabase/002_colours_progress_writing.sql`, in its SQL Editor.
+1. Create a Supabase project and run `supabase/schema.sql`, then `002_colours_progress_writing.sql` and `003_settings.sql`, in its SQL Editor.
 2. Create your user under Authentication → Users, then turn off new sign-ups.
 3. Put the project URL and publishable key in `config.js`.
 4. Host the folder on any static host (GitHub Pages, Cloudflare Pages, Codeberg Pages).
@@ -38,7 +40,8 @@ Any static file server works, for example `python3 -m http.server` in this folde
 ## Stages
 
 1. Areas, projects, subgoals, tasks, Inbox and Today ✓
-2. Daily planning with time blocks and working days
+2. Daily planning with time blocks and working days ✓
 3. Calendar and Timeline
 4. Dissertation word counter ✓ (brought forward)
 5. Insights and the Done log
+6. Pomodoro timer

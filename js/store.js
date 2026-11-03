@@ -10,6 +10,7 @@ const SNAPSHOT_KEY = 'planner.snapshot';
 export const state = {
   areas: [], projects: [], tasks: [], subtasks: [], progress_log: [],
   wc: { chapters: [], entries: [], settings: null },
+  workdays: [], settings: {},
   loaded: false, offline: false, needsUpdate: false,
 };
 
@@ -29,6 +30,8 @@ function saveSnapshot() {
     const snap = { user: currentUser()?.id };
     TABLES.forEach((t) => { snap[t] = state[t]; });
     snap.wc = state.wc;
+    snap.workdays = state.workdays;
+    snap.settings = state.settings;
     localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(snap));
   } catch { /* storage full or unavailable */ }
 }
@@ -39,6 +42,8 @@ export function loadSnapshot() {
     if (!snap || snap.user !== currentUser()?.id) return false;
     TABLES.forEach((t) => { state[t] = snap[t] || []; });
     if (snap.wc) state.wc = snap.wc;
+    if (snap.workdays) state.workdays = snap.workdays;
+    if (snap.settings) state.settings = snap.settings;
     state.loaded = true;
     emit();
     return true;
@@ -55,12 +60,14 @@ export async function refresh() {
   // A table that doesn't exist yet means the database update hasn't been run.
   let missing = false;
   const get = (t) => db.all(t).catch((e) => { if (/does not exist|schema cache|Could not find/i.test(e.message)) { missing = true; return []; } throw e; });
-  const [results, chapters, entries, settings] = await Promise.all([
-    Promise.all(TABLES.map(get)), get(WC.chapters), get(WC.entries), get(WC.settings),
+  const [results, chapters, entries, settings, workdays, userSettings] = await Promise.all([
+    Promise.all(TABLES.map(get)), get(WC.chapters), get(WC.entries), get(WC.settings), get('working_days'), get('user_settings'),
   ]);
   if (pendingChanges()) return false;
   TABLES.forEach((t, i) => { state[t] = results[i]; });
   state.wc = { chapters, entries, settings: settings[0] || null };
+  state.workdays = workdays;
+  state.settings = userSettings[0]?.data || {};
   state.needsUpdate = missing || (settings[0] && !('off_days' in settings[0])) || (results[1][0] && !('emoji' in results[1][0]));
   state.loaded = true;
   state.offline = false;
@@ -240,6 +247,45 @@ export function wcSaveSettings(patch) {
   delete row.user_id;
   state.wc.settings = row;
   enqueue({ type: 'upsert', table: WC.settings, row, conflict: 'user_id' });
+  emit();
+}
+
+// ---- Working hours
+
+// Your usual week. Day numbers as in JavaScript: 0 = Sunday … 6 = Saturday.
+export const DEFAULT_WEEK = { 0: null, 1: { start: '08:00', end: '16:00' }, 2: { start: '08:00', end: '16:00' }, 3: { start: '08:00', end: '16:00' }, 4: { start: '08:00', end: '16:00' }, 5: { start: '08:00', end: '16:00' }, 6: null };
+export const usualWeek = () => ({ ...DEFAULT_WEEK, ...(state.settings.week || {}) });
+
+export function saveSettings(patch) {
+  state.settings = { ...state.settings, ...patch };
+  enqueue({ type: 'upsert', table: 'user_settings', row: { data: state.settings, updated_at: new Date().toISOString() }, conflict: 'user_id' });
+  emit();
+}
+
+const hhmm = (t) => (t ? String(t).slice(0, 5) : null);
+
+// Working hours on one day: { start, end, custom } or null for a day off.
+export function workHours(day) {
+  const o = state.workdays.find((w) => w.day === day);
+  if (o) return o.start_time ? { start: hhmm(o.start_time), end: hhmm(o.end_time), custom: true } : null;
+  const [y, m, d] = day.split('-').map(Number);
+  const usual = usualWeek()[new Date(y, m - 1, d).getDay()];
+  return usual ? { ...usual, custom: false } : null;
+}
+export const isCustomDay = (day) => state.workdays.some((w) => w.day === day);
+
+// Change one day: hours, or null for a day off.
+export function setWorkday(day, hours) {
+  const row = { day, start_time: hours ? hours.start : null, end_time: hours ? hours.end : null };
+  const i = state.workdays.findIndex((w) => w.day === day);
+  if (i >= 0) state.workdays[i] = row; else state.workdays.push(row);
+  enqueue({ type: 'upsert', table: 'working_days', row, conflict: 'user_id,day' });
+  emit();
+}
+
+export function resetWorkday(day) {
+  state.workdays = state.workdays.filter((w) => w.day !== day);
+  enqueue({ type: 'delete', table: 'working_days', id: day, key: 'day' });
   emit();
 }
 

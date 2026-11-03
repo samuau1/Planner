@@ -6,6 +6,8 @@ import {
 } from './store.js';
 import * as V from './views.js';
 import { projectsView, projectView } from './project.js';
+import { planView, setupDrag, fillDay, dragging } from './plan.js';
+import { setWorkday, resetWorkday, saveSettings, usualWeek } from './store.js';
 import { writingView, updateWritingInputs, setDraft, saveCounts, deleteDay, addChapter, saveWritingSettings, earnedBadges } from './writing.js';
 import { today, addDays } from './util.js';
 
@@ -30,12 +32,14 @@ function mainHTML(r) {
     case 'projects': return projectsView();
     case 'project': return projectView(r.id, r.tab, ui);
     case 'writing': return writingView(ui);
-    case 'settings': return V.settingsView(currentUser()?.email, pendingChanges(), ui.importPlan, ui.importError);
+    case 'settings': return V.settingsView(currentUser()?.email, pendingChanges(), ui.importPlan, ui.importError, ui);
+    case 'plan': return planView(ui);
     default: return V.todayView(ui);
   }
 }
 
 function render() {
+  if (dragging()) { setTimeout(render, 250); return; }
   if (!currentUser()) {
     root.innerHTML = V.loginView(ui.loginError || '');
     document.title = 'Sign in';
@@ -61,7 +65,7 @@ function render() {
   $('#main').innerHTML = `<div class="page">${mainHTML(r)}</div>`;
   if (keepId) document.getElementById(keepId)?.focus();
   if (r.name === 'writing') { updateWritingInputs(); checkBadges(); }
-  const titles = { today: 'Today', inbox: 'Inbox', projects: 'Projects', settings: 'Settings', writing: 'Word counter' };
+  const titles = { today: 'Today', inbox: 'Inbox', projects: 'Projects', settings: 'Settings', writing: 'Word counter', plan: 'Plan your day' };
   document.title = r.name === 'project' ? (getProject(r.id)?.name || 'Project') : titles[r.name] || 'Today';
   if (ui.panel && !panelTargetExists()) closePanel();
   renderStatus();
@@ -183,6 +187,12 @@ const actions = {
     openPanel('project', p.id, 'proj-name');
   },
   'edit-project': (id) => openPanel('project', id, null),
+  'hide-plan-banner': () => { ui.hidePlanBanner = today(); render(); },
+  'plan-done': () => { saveSettings({ lastPlanned: today() }); location.hash = '#/today'; },
+  'fill-day': () => { const n = fillDay(today()); toast(n ? `Placed ${n} task${n === 1 ? '' : 's'} in your working hours` : 'No free time left in your working hours'); },
+  'wd-select': (day) => { ui.wdSel = ui.wdSel === day ? null : day; render(); },
+  'wd-month': (month) => { ui.wdMonth = month; ui.wdSel = null; render(); },
+  'wd-reset': (day) => { resetWorkday(day); toast('Back to your usual hours'); },
   'pick-emoji': (id, btn) => { update('projects', id, { emoji: btn.dataset.emoji }); renderPanel(); },
   'pick-color': (id, btn) => { update('projects', id, { color: btn.dataset.color }); renderPanel(); },
   'wc-delete': (day) => {
@@ -192,7 +202,7 @@ const actions = {
   'toggle-show-done': (id) => { ui.showDone[id] = !ui.showDone[id]; render(); },
   plan: (id, btn) => {
     const when = btn.dataset.when;
-    update('tasks', id, { planned_date: when === 'today' ? today() : when === 'tomorrow' ? addDays(today(), 1) : null });
+    update('tasks', id, { planned_date: when === 'today' ? today() : when === 'tomorrow' ? addDays(today(), 1) : null, start_time: null });
     renderPanel();
   },
   'task-delete': (id) => { closePanel(); remove('tasks', id); toast('Task deleted'); },
@@ -306,6 +316,25 @@ const forms = {
     setProgressValue(form.dataset.id, v);
     toast('Progress updated');
   },
+  'today-hours': () => {
+    const on = $('#th-work').checked;
+    setWorkday(today(), on ? { start: $('#th-start').value, end: $('#th-end').value } : null);
+    toast(on ? `Working ${$('#th-start').value}–${$('#th-end').value} today` : 'Today is a day off');
+  },
+  'day-hours': (form) => {
+    const on = $('#dh-work').checked;
+    setWorkday(form.dataset.day, on ? { start: $('#dh-start').value, end: $('#dh-end').value } : null);
+    toast('Day saved');
+  },
+  'usual-week': () => {
+    const week = {};
+    [0, 1, 2, 3, 4, 5, 6].forEach((d) => {
+      const on = document.querySelector(`.wk-on[data-day="${d}"]`).checked;
+      week[d] = on ? { start: document.querySelector(`.wk-start[data-day="${d}"]`).value, end: document.querySelector(`.wk-end[data-day="${d}"]`).value } : null;
+    });
+    saveSettings({ week });
+    toast('Usual week saved');
+  },
   'wc-save': () => {
     ui.wcDate = $('#wc-date').value || today();
     const msg = saveCounts(ui.wcDate, $('#wc-note').value.trim());
@@ -363,17 +392,20 @@ document.addEventListener('change', async (e) => {
   if (el.dataset.field) {
     const { field, kind, id } = el.dataset;
     let value = el.type === 'checkbox' ? el.checked : el.value;
-    if (['estimate_minutes', 'progress_target'].includes(field)) value = numberOrNull(value);
+    if (['estimate_minutes', 'progress_target', 'block_minutes'].includes(field)) value = numberOrNull(value);
+    else if (field === 'start_time') value = value || null;
     else if (['planned_date', 'deadline', 'start_date', 'project_id', 'area_id', 'repeat_rule', 'parent_id'].includes(field)) value = value || null;
     else if (['title', 'name'].includes(field)) {
       value = value.trim();
       if (!value) { el.value = (kind === 'tasks' ? getTask(id)?.title : getProject(id)?.name) || ''; return; }
     }
     if (kind === 'projects' && field === 'status') setProjectStatus(id, value);
+    else if (kind === 'tasks' && field === 'planned_date') { update(kind, id, { planned_date: value, start_time: null }); renderPanel(); }
     else update(kind, id, { [field]: value });
     if (['progress_type', 'emoji'].includes(field)) renderPanel();
     return;
   }
+  if (el.id === 'th-work') { $('#th-start').disabled = !el.checked; $('#th-end').disabled = !el.checked; return; }
   if (el.dataset.subDone) { update('subtasks', el.dataset.subDone, { done: el.checked }); renderPanel(); return; }
   if (el.dataset.subTitle) {
     const v = el.value.trim();
@@ -399,6 +431,7 @@ document.addEventListener('toggle', (e) => {
     const p = getProject(d.dataset.collapse);
     if (p && p.collapsed === d.open) update('projects', p.id, { collapsed: !d.open });
   } else if (d.dataset?.remember) ui[d.dataset.remember] = d.open;
+  else if (d.dataset?.rememberPlan) { ui.planOpen = { ...(ui.planOpen || {}), [d.dataset.rememberPlan]: d.open }; }
 }, true);
 
 // ---- Start
@@ -407,6 +440,7 @@ if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('./sw.js').catch(() => {});
 }
 
+setupDrag((id) => openPanel('task', id));
 if (currentUser()) loadSnapshot();
 render();
 sync();
